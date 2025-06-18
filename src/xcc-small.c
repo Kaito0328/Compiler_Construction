@@ -257,7 +257,7 @@ static struct AST *create_final_word(enum token_kind kind) {
 
 static struct AST *create_leaf_with_lexeme(enum token_kind kind) {
   struct AST *ast = create_leaf(token_kind_string[kind], token_p->lexeme);
-  consume_token(TK_ID);
+  consume_token(kind);
   return ast;
 }
 
@@ -846,12 +846,20 @@ static void unparse_error(struct AST *ast) {
   exit(1);
 }
 
-static int check_TK_type(struct AST *ast, enum token_kind kind) {
+static int is_TK_type(struct AST *ast, enum token_kind kind) {
   return !strcmp(ast->ast_type, token_kind_string[kind]);
 }
 
-static int check_CK_type(struct AST *ast, enum grammar_constructs_kind kind) {
+static void check_TK_type(struct AST *ast, enum token_kind kind) {
+  if (!is_TK_type(ast, kind)) unparse_error(ast);
+}
+
+static int is_CK_type(struct AST *ast, enum grammar_constructs_kind kind) {
   return !strcmp(ast->ast_type, grammar_constructs_kind_string[kind]);
+}
+
+static void check_CK_type(struct AST *ast, enum grammar_constructs_kind kind) {
+  if (!is_CK_type(ast, kind)) unparse_error(ast);
 }
 
 static void unparse_translation_unit(struct AST *ast, int depth) {
@@ -860,204 +868,226 @@ static void unparse_translation_unit(struct AST *ast, int depth) {
     printf_ns(depth, "");
     unparse_AST(ast->child[i], depth + 1);
     unparse_AST(ast->child[i + 1], depth + 1);
-    if (!strcmp(ast->child[i + 2]->ast_type, ";")) {
+
+    if (is_TK_type(ast->child[i + 2], ';')) {
       printf(";\n");
-    } else if (!strcmp(ast->child[i + 2]->ast_type, "compound_statement")) {
+    } else if (is_CK_type(ast->child[i + 2], CK_COMPOUND_STATEMENT)) {
       printf("\n");
       unparse_AST(ast->child[i + 2], depth);
     } else {
       unparse_error(ast);
     }
-    i += 2;
+    i += 3;
   }
+}
+
+static void unparse_type_specifier(struct AST *ast, int depth) {
+  if (is_TK_type(ast->child[0], TK_KW_VOID) ||
+      is_TK_type(ast->child[0], TK_KW_CHAR) ||
+      is_TK_type(ast->child[0], TK_KW_INT) ||
+      is_TK_type(ast->child[0], TK_KW_LONG)) {
+    printf("%s ", ast->child[0]->lexeme);
+    return;
+  }
+
+  unparse_error(ast);
+}
+
+static void unparse_declarator(struct AST *ast, int depth) {
+  int i = 0;
+  if (is_TK_type(ast->child[i], TK_ID)) {
+    printf("%s ", ast->child[i]->lexeme);
+    i++;
+  } else if (is_TK_type(ast->child[i], '*')) {
+    printf("* ");
+    i++;
+    unparse_AST(ast->child[i], depth);
+    i++;
+  } else if (is_TK_type(ast->child[i], '(')) {
+    printf("(");
+    i++;
+    unparse_AST(ast->child[i], depth);
+    i++;
+    check_TK_type(ast->child[i], ')');
+    printf(")");
+    i++;
+  }
+
+  while (i < ast->num_child) {
+    if (is_TK_type(ast->child[i], '(')) break;
+    printf("(");
+    i++;
+    if (is_CK_type(ast->child[i], CK_PARAMETER)) {
+      unparse_AST(ast->child[i], depth);
+      i++;
+      while (i < ast->num_child) {
+        check_TK_type(ast->child[i], ',');
+        printf(",");
+        i++;
+        unparse_AST(ast->child[i], depth);
+        i++;
+      }
+    }
+
+    check_TK_type(ast->child[i], ')');
+    printf(")");
+  }
+}
+
+static void unparse_parameter_declaration(struct AST *ast, int depth) {
+  unparse_AST(ast->child[0], depth);
+  unparse_AST(ast->child[1], depth);
+}
+
+static void unparse_compound_statement(struct AST *ast, int depth) {
+  check_TK_type(ast->child[0], '{');
+  printf(" {\n");
+  depth++;
+
+  int i = 1;
+  while (i < ast->num_child - 1) {
+    if (!is_CK_type(ast->child[i], CK_TYPE_SPECIFIER)) break;
+    printf_ns(depth, "");
+    unparse_AST(ast->child[i], depth);
+    unparse_AST(ast->child[i + 1], depth);
+    check_TK_type(ast->child[i + 2], ',');
+    printf(";\n");
+    i += 3;
+  }
+
+  while (i < ast->num_child - 1) {
+    if (!is_CK_type(ast->child[i], CK_STATEMENT)) break;
+    printf_ns(depth, "");
+    unparse_AST(ast->child[i], depth);
+    i += 1;
+  }
+
+  check_TK_type(ast->child[i], '}');
+  printf("}\n");
+}
+
+static void unparse_exp(struct AST *ast, int depth) {
+  check_CK_type(ast->child[0], CK_PRIMARY);
+  unparse_AST(ast->child[0], depth);
+
+  if (ast->num_child >= 3 && is_TK_type(ast->child[1], '(')) {
+    printf("(");
+    check_TK_type(ast->child[2], ')');
+    printf(")");
+  }
+}
+
+static void unparse_primary(struct AST *ast, int depth) {
+  if (is_TK_type(ast->child[0], TK_INT) || is_TK_type(ast->child[0], TK_CHAR) ||
+      is_TK_type(ast->child[0], TK_STRING) ||
+      is_TK_type(ast->child[0], TK_ID)) {
+    printf("%s", ast->child[0]->lexeme);
+    return;
+  }
+
+  if (is_TK_type(ast->child[0], '(')) {
+    printf("(");
+    check_CK_type(ast->child[1], CK_EXPRESSION);
+    unparse_AST(ast->child[1], depth);
+    check_CK_type(ast->child[2], ')');
+    printf(")");
+    return;
+  }
+
+  unparse_error(ast);
+}
+
+static void unparse_statement(struct AST *ast, int depth) {
+  if (is_TK_type(ast->child[0], TK_ID) && is_TK_type(ast->child[1], ':')) {
+    printf("%s:", ast->child[0]->lexeme);
+  } else if (is_CK_type(ast->child[0], CK_COMPOUND_STATEMENT)) {
+    unparse_AST(ast->child[0], depth);
+  } else if (is_TK_type(ast->child[0], TK_KW_IF)) {
+    check_TK_type(ast->child[1], '(');
+    printf("if (");
+    check_CK_type(ast->child[2], CK_EXPRESSION);
+    unparse_AST(ast->child[2], depth);
+    check_TK_type(ast->child[3], ')');
+    printf(")");
+    check_CK_type(ast->child[4], CK_STATEMENT);
+
+    if (is_CK_type(ast->child[4]->child[0], CK_COMPOUND_STATEMENT)) {
+      unparse_AST(ast->child[4], depth);
+    } else {
+      printf(" {\n");
+      printf_ns(depth + 1, "");
+      unparse_AST(ast->child[4], depth + 1);
+      printf_ns(depth, "");
+      printf("}");
+    }
+
+    if (ast->num_child >= 7 && is_TK_type(ast->child[5], TK_KW_ELSE)) {
+      printf(" else");
+
+      check_CK_type(ast->child[6], CK_STATEMENT);
+      if (is_CK_type(ast->child[6]->child[0], CK_COMPOUND_STATEMENT)) {
+        unparse_AST(ast->child[6], depth);
+      } else {
+        printf(" {\n");
+        printf_ns(depth + 1, "");
+        unparse_AST(ast->child[6], depth + 1);
+        printf_ns(depth, "");
+        printf("}");
+      }
+    }
+  } else if (is_TK_type(ast->child[0], TK_KW_WHILE)) {
+    check_TK_type(ast->child[1], '(');
+    printf("while (");
+    check_CK_type(ast->child[2], CK_EXPRESSION);
+    unparse_AST(ast->child[2], depth);
+    check_TK_type(ast->child[3], ')');
+    printf(")\n");
+    check_CK_type(ast->child[4], CK_STATEMENT);
+    unparse_AST(ast->child[4], depth);
+  } else if (is_TK_type(ast->child[0], TK_KW_GOTO)) {
+    check_TK_type(ast->child[1], TK_ID);
+    printf("goto %s", ast->child[1]->lexeme);
+    check_TK_type(ast->child[2], ';');
+    printf(";");
+  } else if (is_TK_type(ast->child[0], TK_KW_RETURN)) {
+    printf("return ");
+    int i = 1;
+    if (ast->num_child >= 2 && is_CK_type(ast->child[1], CK_EXPRESSION)) {
+      unparse_AST(ast->child[1], depth);
+      i++;
+    }
+    check_TK_type(ast->child[i], ';');
+    printf(";");
+  } else if (is_CK_type(ast->child[0], CK_EXPRESSION)) {
+    unparse_AST(ast->child[0], depth);
+    check_TK_type(ast->child[1], ';');
+    printf(";");
+  } else if (is_TK_type(ast->child[0], ';')) {
+    printf(";");
+  } else {
+    unparse_error(ast);
+  }
+  printf("\n");
 }
 
 static void unparse_AST(struct AST *ast, int depth) {
   int i;
-  if (!strcmp(ast->ast_type, "translation_unit")) {
-  } else if (!strcmp(ast->ast_type, "type_specifier")) {
-    if (!strcmp(ast->child[0]->ast_type, "void")) {
-      printf("void ");
-    } else if (!strcmp(ast->child[0]->ast_type, "char")) {
-      printf("char ");
-    } else if (!strcmp(ast->child[0]->ast_type, "int")) {
-      printf("int ");
-    } else if (!strcmp(ast->child[0]->ast_type, "long")) {
-      printf("long ");
-    } else {
-      unparse_error(ast);
-    }
-  } else if (!strcmp(ast->ast_type, "declarator")) {
-    int i = 0;
-    if (!strcmp(ast->child[i]->ast_type, "ID")) {
-      printf("%s ", ast->child[i]->lexeme);
-      i++;
-    } else if (!strcmp(ast->child[i]->ast_type, "*")) {
-      printf("* ");
-      i++;
-      unparse_AST(ast->child[i], depth);
-      i++;
-    } else if (!strcmp(ast->child[i]->ast_type, "(")) {
-      printf("(");
-      i++;
-      unparse_AST(ast->child[i], depth);
-      i++;
-      if (!strcmp(ast->child[i]->ast_type, ")")) unparse_error(ast);
-      printf(")");
-      i++;
-    }
-
-    while (i < ast->num_child) {
-      if (strcmp(ast->child[i]->ast_type, "(")) break;
-      printf("(");
-      i++;
-
-      if (!strcmp(ast->child[i]->ast_type, "parameter_declaration")) {
-        unparse_AST(ast->child[i], depth);
-        i++;
-        while (i < ast->num_child) {
-          if (strcmp(ast->child[i]->ast_type, ",")) break;
-          printf(",");
-          i++;
-          unparse_AST(ast->child[i], depth);
-          i++;
-        }
-      }
-
-      if (strcmp(ast->child[i]->ast_type, ")")) unparse_error(ast);
-      printf(")");
-    }
-  } else if (!strcmp(ast->ast_type, "parameter_declaration")) {
-    unparse_AST(ast->child[0], depth);
-    unparse_AST(ast->child[1], depth);
-  } else if (!strcmp(ast->ast_type, "compound_statement")) {
-    if (strcmp(ast->child[0]->ast_type, "{")) unparse_error(ast);
-    printf("{\n");
-
-    int i = 1;
-    while (i < ast->num_child - 1) {
-      if (strcmp(ast->child[i]->ast_type, "type_specifier")) break;
-      printf_ns(depth + 1, "");
-      unparse_AST(ast->child[i], depth + 1);
-      unparse_AST(ast->child[i + 1], depth + 1);
-      if (strcmp(ast->child[i + 2]->ast_type, ";")) unparse_error(ast);
-      printf(";\n");
-      i += 3;
-    }
-
-    while (i < ast->num_child - 1) {
-      if (strcmp(ast->child[i]->ast_type, "statement")) break;
-      printf_ns(depth + 1, "");
-      unparse_AST(ast->child[i], depth + 1);
-      printf("\n");
-      i += 1;
-    }
-
-    if (i != ast->num_child - 1) unparse_error(ast);
-    if (strcmp(ast->child[i]->ast_type, "}")) unparse_error(ast);
-
-    printf("}\n");
-  } else if (!strcmp(ast->ast_type, "exp")) {
-    if (strcmp(ast->child[0]->ast_type, "primary")) unparse_error(ast);
-    unparse_AST(ast->child[0], depth);
-
-    if (ast->num_child >= 3 && !strcmp(ast->child[1]->ast_type, "(")) {
-      printf("(");
-      if (!strcmp(ast->child[2]->ast_type, ")")) {
-        printf(")");
-      } else {
-        unparse_error(ast);
-      }
-    }
-  } else if (!strcmp(ast->ast_type, "primary")) {
-    if (!strcmp(ast->child[0]->ast_type, "INT") ||
-        !strcmp(ast->child[0]->ast_type, "CHAR") ||
-        !strcmp(ast->child[0]->ast_type, "STRING") ||
-        !strcmp(ast->child[0]->ast_type, "ID")) {
-      printf("%s", ast->child[0]->lexeme);
-    } else if (!strcmp(ast->child[0]->ast_type, "(")) {
-      printf("(");
-      if (strcmp(ast->child[1]->ast_type, "exp")) unparse_error(ast);
-      unparse_AST(ast->child[1], depth);
-      if (strcmp(ast->child[2]->ast_type, ")")) unparse_error(ast);
-      printf(")");
-    } else {
-      unparse_error(ast);
-    }
-  } else if (!strcmp(ast->ast_type, "statement")) {
-    if (!strcmp(ast->child[0]->ast_type, "ID") &&
-        !strcmp(ast->child[1]->ast_type, ":")) {
-      printf("%s:", ast->child[0]->lexeme);
-    } else if (!strcmp(ast->child[0]->ast_type, "compound_statement")) {
-      unparse_AST(ast->child[0], depth);
-    } else if (!strcmp(ast->child[0]->ast_type, "IF")) {
-      printf("if ");
-      if (strcmp(ast->child[1]->ast_type, "(")) unparse_error(ast);
-      printf("(");
-      if (strcmp(ast->child[2]->ast_type, "exp")) unparse_error(ast);
-      unparse_AST(ast->child[2], depth);
-      if (strcmp(ast->child[3]->ast_type, ")")) unparse_error(ast);
-      printf(")\n");
-      printf_ns(depth, "");
-      printf("{\n");
-      printf_ns(depth + 1, "");
-      if (strcmp(ast->child[4]->ast_type, "statement")) unparse_error(ast);
-      unparse_AST(ast->child[4], depth + 1);
-      printf("\n");
-      printf_ns(depth, "");
-      printf("}\n");
-      if (ast->num_child >= 6 && !strcmp(ast->child[5]->ast_type, "ELSE")) {
-        printf_ns(depth, "");
-        printf("else\n");
-        printf_ns(depth, "");
-        printf("{\n");
-        printf_ns(depth + 1, "");
-        if (strcmp(ast->child[6]->ast_type, "statement")) unparse_error(ast);
-        unparse_AST(ast->child[6], depth + 1);
-        printf("\n");
-        printf_ns(depth, "");
-        printf("}\n");
-      }
-    } else if (!strcmp(ast->child[0]->ast_type, "WHILE")) {
-      printf("while ");
-      if (strcmp(ast->child[1]->ast_type, "(")) unparse_error(ast);
-      printf("(");
-      if (strcmp(ast->child[2]->ast_type, "exp")) unparse_error(ast);
-      unparse_AST(ast->child[2], depth);
-      if (strcmp(ast->child[3]->ast_type, ")")) unparse_error(ast);
-      printf(")\n");
-      printf_ns(depth, "");
-      printf("{\n");
-      printf_ns(depth + 1, "");
-      if (strcmp(ast->child[4]->ast_type, "statement")) unparse_error(ast);
-      unparse_AST(ast->child[4], depth + 1);
-      printf("\n");
-      printf_ns(depth, "");
-      printf("}\n");
-    } else if (!strcmp(ast->child[0]->ast_type, "goto")) {
-      printf("goto ");
-      if (strcmp(ast->child[1]->ast_type, "ID")) unparse_error(ast);
-      printf("%s", ast->child[1]->lexeme);
-      if (strcmp(ast->child[2]->ast_type, ";")) unparse_error(ast);
-      printf(";");
-    } else if (!strcmp(ast->child[0]->ast_type, "return")) {
-      printf("return ");
-      int i = 1;
-      if (ast->num_child >= i + 1 && !strcmp(ast->child[i]->ast_type, "exp")) {
-        unparse_AST(ast->child[i], depth);
-        i++;
-      }
-      if (strcmp(ast->child[i]->ast_type, ";")) unparse_error(ast);
-      printf(";");
-    } else if (!strcmp(ast->child[0]->ast_type, "exp")) {
-      unparse_AST(ast->child[0], depth);
-      if (strcmp(ast->child[1]->ast_type, ";")) unparse_error(ast);
-      printf(";");
-    } else if (!strcmp(ast->child[0]->ast_type, ";")) {
-      printf(";");
-    } else {
-      unparse_error(ast);
-    }
+  if (is_CK_type(ast, CK_TRANSLATION_UNIT)) {
+    unparse_translation_unit(ast, depth);
+  } else if (is_CK_type(ast, CK_TYPE_SPECIFIER)) {
+    unparse_type_specifier(ast, depth);
+  } else if (is_CK_type(ast, CK_DECLARATOR)) {
+    unparse_declarator(ast, depth);
+  } else if (is_CK_type(ast, CK_PARAMETER)) {
+    unparse_parameter_declaration(ast, depth);
+  } else if (is_CK_type(ast, CK_COMPOUND_STATEMENT)) {
+    unparse_compound_statement(ast, depth);
+  } else if (is_CK_type(ast, CK_EXPRESSION)) {
+    unparse_exp(ast, depth);
+  } else if (is_CK_type(ast, CK_PRIMARY)) {
+    unparse_primary(ast, depth);
+  } else if (is_CK_type(ast, CK_STATEMENT)) {
+    unparse_statement(ast, depth);
   } else {
     unparse_error(ast);
   }
