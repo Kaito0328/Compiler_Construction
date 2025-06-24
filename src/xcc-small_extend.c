@@ -87,26 +87,30 @@ char *token_kind_string[] = {
 };
 
 enum grammar_constructs_kind {
-  CK_UNUSED,
-  CK_TRANSLATION_UNIT = 0,
-  CK_TYPE_SPECIFIER,
-  CK_DECLARATOR,
-  CK_COMPOUND_STATEMENT,
-  CK_EXPRESSION,
-  CK_PRIMARY,
-  CK_STATEMENT,
+  CK_UNUSED = 0,
+  CK_TRANSLATION_UNIT = 1,
+  CK_TYPE_SPECIFIER = 2,
+  CK_DECLARATOR = 3,
+  CK_PARAMETER_DECLARATION = 4,
+  CK_STATEMENT = 5,
+  CK_COMPOUND_STATEMENT = 6,
+  CK_EXPRESSION = 7,
+  CK_UNARY_OPERATOR = 8,
+  CK_BINARY_OPERATOR = 9,
+  CK_ARGUMENT_EXPRESSION_LIST = 10,
 };
 
-char *grammar_constructs_kind_string[] = {
-    "unused"
-    "translation_unit",
-    "type_specifier",
-    "declarator",
-    "compound_statement",
-    "exp",
-    "primary",
-    "statement",
-};
+char *grammar_constructs_kind_string[] = {"unused",
+                                          "translation_unit",
+                                          "type_specifier",
+                                          "declarator",
+                                          "parameter_declaration",
+                                          "statement",
+                                          "compound_statement",
+                                          "expression",
+                                          "unary_operator",
+                                          "binary_operator",
+                                          "argument_expression_list"};
 
 static struct token tokens[MAX_TOKENS];
 static int tokens_index = 0;
@@ -241,12 +245,16 @@ static struct AST *create_final_word(enum token_kind kind) {
   return ast;
 }
 
+static struct AST *parse_translation_unit(void);
 static struct AST *parse_type_specifier(void);
 static struct AST *parse_declarator(void);
-static struct AST *parse_compound_statement(void);
-static struct AST *parse_exp(void);
-static struct AST *parse_primary(void);
+static struct AST *parse_parameter_declaration(void);
 static struct AST *parse_statement(void);
+static struct AST *parse_compound_statement(void);
+static struct AST *parse_expression(void);
+static struct AST *parse_unary_operator(void);
+static struct AST *parse_binary_operator(void);
+static struct AST *parse_argument_expression_list(void);
 
 static struct AST *parse_type_specifier(void) {
   struct AST *ast, *ast1;
@@ -267,18 +275,67 @@ static struct AST *parse_type_specifier(void) {
 }
 
 static struct AST *parse_declarator(void) {
-  struct AST *ast, *ast1, *ast2, *ast3;
+  struct AST *ast, *ast1, *ast2, *ast3, *dec;
   ast = create_construct_AST(CK_DECLARATOR);
 
-  ast1 = create_final_word(TK_ID);
-  ast = add_AST(ast, 1, ast1);
-
-  if (lookahead(1) == '(') {
-    ast1 = create_final_word('(');
-    ast2 = create_final_word(')');
-    ast = add_AST(ast, 2, ast1, ast2);
+  switch (lookahead(1)) {
+    case TK_ID:
+      ast1 = create_final_word(TK_ID);
+      ast = add_AST(ast, 1, ast1);
+      break;
+    case '*':
+      ast1 = create_final_word('*');
+      ast2 = parse_declarator();
+      ast = add_AST(ast, 2, ast1, ast2);
+      break;
+    case '(':
+      ast1 = create_final_word('(');
+      ast2 = parse_declarator();
+      ast3 = create_final_word(')');
+      ast = add_AST(ast, 3, ast1, ast2, ast3);
+      break;
+    default:
+      parse_error();
+      break;
   }
 
+  dec = create_construct_AST(CK_DECLARATOR);
+  while (lookahead(1) == '(') {
+    ast1 = create_final_word('(');
+    dec = add_AST(dec, 2, ast, ast1);
+
+    switch (lookahead(1)) {
+      case TK_KW_VOID:
+      case TK_KW_CHAR:
+      case TK_KW_INT:
+      case TK_KW_LONG:
+        ast1 = parse_parameter_declaration();
+        dec = add_AST(dec, 1, ast1);
+
+        while (lookahead(1) == ',') {
+          ast1 = create_final_word(',');
+          ast2 = parse_parameter_declaration();
+          dec = add_AST(dec, 2, ast1, ast2);
+        }
+        break;
+      default:
+        break;
+    }
+
+    ast1 = create_final_word(')');
+    dec = add_AST(dec, 1, ast1);
+    ast = dec;
+  }
+
+  return ast;
+}
+
+static struct AST *parse_parameter_declaration(void) {
+  struct AST *ast, *ast1, *ast2;
+  ast = create_construct_AST(CK_PARAMETER_DECLARATION);
+  ast1 = parse_type_specifier();
+  ast2 = parse_declarator();
+  ast = add_AST(ast, 2, ast1, ast2);
   return ast;
 }
 
@@ -318,6 +375,11 @@ loop_exit:
       case TK_STRING:
       case TK_ID:
       case '(':
+      case '&':
+      case '*':
+      case '+':
+      case '-':
+      case '!':
         ast1 = parse_statement();
         ast = add_AST(ast, 1, ast1);
         break;
@@ -333,41 +395,85 @@ state_loop_exit:
   return ast;
 }
 
-static struct AST *parse_primary(void) {
-  struct AST *ast, *ast1, *ast2, *ast3;
-  ast = create_construct_AST(CK_PRIMARY);
+static struct AST *parse_expression(void) {
+  struct AST *ast, *ast1, *ast2, *ast3, *exp;
+  ast = create_construct_AST(CK_EXPRESSION);
 
   switch (lookahead(1)) {
+    case TK_ID:
     case TK_INT:
     case TK_CHAR:
     case TK_STRING:
-    case TK_ID:
       ast1 = create_final_word(lookahead(1));
       ast = add_AST(ast, 1, ast1);
       break;
+    case '&':
+    case '*':
+    case '+':
+    case '-':
+    case '!':
+      ast1 = parse_unary_operator();
+      ast2 = parse_expression();
+      ast = add_AST(ast, 2, ast1, ast2);
+      break;
     case '(':
       ast1 = create_final_word('(');
-      ast2 = parse_exp();
+      ast2 = parse_expression();
       ast3 = create_final_word(')');
       ast = add_AST(ast, 3, ast1, ast2, ast3);
       break;
     default:
       parse_error();
   }
-  return ast;
-}
 
-static struct AST *parse_exp(void) {
-  struct AST *ast, *ast1, *ast2;
-  ast = create_construct_AST(CK_EXPRESSION);
-  ast1 = parse_primary();
-  ast = add_AST(ast, 1, ast1);
+  exp = create_construct_AST(CK_EXPRESSION);
+  while (1) {
+    switch (lookahead(1)) {
+      case '=':
+      case TK_OP_OR:
+      case TK_OP_AND:
+      case TK_OP_EQ:
+      case '<':
+      case '+':
+      case '-':
+      case '*':
+      case '/':
 
-  if (lookahead(1) == '(') {
-    ast1 = create_final_word('(');
-    ast2 = create_final_word(')');
-    ast = add_AST(ast, 2, ast1, ast2);
+        ast1 = parse_binary_operator();
+        ast2 = parse_expression();
+        exp = add_AST(exp, 3, ast, ast1, ast2);
+        ast = exp;
+        break;
+      case '(':
+        ast1 = create_final_word('(');
+        exp = add_AST(exp, 2, ast, ast1);
+        switch (lookahead(1)) {
+          case TK_ID:
+          case TK_INT:
+          case TK_CHAR:
+          case TK_STRING:
+          case '&':
+          case '*':
+          case '+':
+          case '-':
+          case '!':
+          case '(':
+            ast1 = parse_argument_expression_list();
+            exp = add_AST(exp, 1, ast1);
+            break;
+          default:
+            break;
+        }
+        ast1 = create_final_word(')');
+        exp = add_AST(exp, 1, ast1);
+        ast = exp;
+        break;
+      default:
+        goto loop_exit;
+    }
   }
+
+loop_exit:
 
   return ast;
 }
@@ -391,7 +497,7 @@ static struct AST *parse_statement(void) {
     case TK_KW_IF:
       ast1 = create_final_word(TK_KW_IF);
       ast2 = create_final_word('(');
-      ast3 = parse_exp();
+      ast3 = parse_expression();
       ast4 = create_final_word(')');
       ast5 = parse_statement();
 
@@ -406,7 +512,7 @@ static struct AST *parse_statement(void) {
     case TK_KW_WHILE:
       ast1 = create_final_word(TK_KW_WHILE);
       ast2 = create_final_word('(');
-      ast3 = parse_exp();
+      ast3 = parse_expression();
       ast4 = create_final_word(')');
       ast5 = parse_statement();
       ast = add_AST(ast, 5, ast1, ast2, ast3, ast4, ast5);
@@ -422,12 +528,17 @@ static struct AST *parse_statement(void) {
       ast1 = create_final_word(TK_KW_RETURN);
       ast = add_AST(ast, 1, ast1);
       switch (lookahead(1)) {
+        case TK_ID:
         case TK_INT:
         case TK_CHAR:
         case TK_STRING:
-        case TK_ID:
+        case '&':
+        case '*':
+        case '+':
+        case '-':
+        case '!':
         case '(':
-          ast1 = parse_exp();
+          ast1 = parse_expression();
           ast = add_AST(ast, 1, ast1);
           break;
         default:
@@ -436,12 +547,17 @@ static struct AST *parse_statement(void) {
       ast1 = create_final_word(';');
       ast = add_AST(ast, 1, ast1);
       break;
+    case TK_ID:
     case TK_INT:
     case TK_CHAR:
     case TK_STRING:
-    case TK_ID:
+    case '&':
+    case '*':
+    case '+':
+    case '-':
+    case '!':
     case '(':
-      ast1 = parse_exp();
+      ast1 = parse_expression();
       ast2 = create_final_word(';');
       ast = add_AST(ast, 2, ast1, ast2);
       break;
@@ -451,6 +567,66 @@ static struct AST *parse_statement(void) {
       break;
     default:
       parse_error();
+  }
+
+  return ast;
+}
+
+static struct AST *parse_unary_operator(void) {
+  struct AST *ast, *ast1;
+
+  ast = create_construct_AST(CK_UNARY_OPERATOR);
+  switch (lookahead(1)) {
+    case '&':
+    case '*':
+    case '+':
+    case '-':
+    case '!':
+      ast1 = create_final_word(lookahead(1));
+      ast = add_AST(ast, 1, ast1);
+      break;
+    default:
+      parse_error();
+  }
+
+  return ast;
+}
+
+static struct AST *parse_binary_operator(void) {
+  struct AST *ast, *ast1;
+
+  ast = create_construct_AST(CK_BINARY_OPERATOR);
+  switch (lookahead(1)) {
+    case '=':
+    case TK_OP_OR:
+    case TK_OP_AND:
+    case TK_OP_EQ:
+    case '<':
+    case '+':
+    case '-':
+    case '*':
+    case '/':
+      ast1 = create_final_word(lookahead(1));
+      ast = add_AST(ast, 1, ast1);
+      break;
+    default:
+      parse_error();
+  }
+
+  return ast;
+}
+
+static struct AST *parse_argument_expression_list(void) {
+  struct AST *ast, *ast1, *ast2;
+
+  ast = create_construct_AST(CK_ARGUMENT_EXPRESSION_LIST);
+  ast1 = parse_expression();
+  ast = add_AST(ast, 1, ast1);
+
+  while (lookahead(1) == ',') {
+    ast1 = create_final_word(',');
+    ast2 = parse_expression();
+    ast = add_AST(ast, 2, ast1, ast2);
   }
 
   return ast;
@@ -471,7 +647,8 @@ static struct AST *parse_translation_unit(void) {
         ast2 = parse_declarator();
         switch (lookahead(1)) {
           case ';':
-            ast3 = create_final_word(';');
+            consume_token(';');
+            ast3 = create_AST(";", 0);
             break;
           case '{':
             ast3 = parse_compound_statement();
@@ -824,13 +1001,40 @@ static void unparse_type_specifier(struct AST *ast, int depth) {
 }
 
 static void unparse_declarator(struct AST *ast, int depth) {
-  check_TK_type(ast->child[0], TK_ID);
-  printf(" %s", ast->child[0]->lexeme);
-
-  if (ast->num_child >= 3 && is_TK_type(ast->child[1], '(')) {
-    check_TK_type(ast->child[2], ')');
-    printf("()");
+  int i = 0;
+  if (is_TK_type(ast->child[0], TK_ID)) {
+    printf(" %s", ast->child[0]->lexeme);
+  } else if (ast->num_child >= 2 && is_TK_type(ast->child[0], '*')) {
+    printf("*");
+    unparse_AST(ast->child[1], depth);
+  } else if (ast->num_child >= 2 && is_TK_type(ast->child[0], '(')) {
+    printf("(");
+    unparse_AST(ast->child[1], depth);
+    check_TK_type(ast->child[1], ')');
+    printf(")");
+  } else if (is_CK_type(ast->child[0], CK_DECLARATOR)) {
+    unparse_AST(ast->child[0], depth);
+    check_TK_type(ast->child[1], '(');
+    printf("(");
+    int i = 2;
+    if (ast->num_child >= 3 &&
+        is_CK_type(ast->child[2], CK_PARAMETER_DECLARATION)) {
+      unparse_AST(ast->child[2], depth);
+      i = 3;
+      while (i + 1 < ast->num_child && is_TK_type(ast->child[i], ',')) {
+        printf(", ");
+        unparse_AST(ast->child[i + 1], depth);
+        i += 2;
+      }
+    }
+    check_TK_type(ast->child[i], ')');
+    printf(")");
   }
+}
+
+static void unparse_parameter_declaration(struct AST *ast, int depth) {
+  unparse_AST(ast->child[0], depth);
+  unparse_AST(ast->child[1], depth);
 }
 
 static void unparse_compound_statement(struct AST *ast, int depth) {
@@ -863,37 +1067,82 @@ static void unparse_compound_statement(struct AST *ast, int depth) {
   printf("}");
 }
 
-static void unparse_exp(struct AST *ast, int depth) {
-  check_CK_type(ast->child[0], CK_PRIMARY);
-  unparse_AST(ast->child[0], depth);
+static void unparse_expression(struct AST *ast, int depth) {
+  if (is_TK_type(ast->child[0], TK_ID) || is_TK_type(ast->child[0], TK_INT) ||
+      is_TK_type(ast->child[0], TK_CHAR) ||
+      is_TK_type(ast->child[0], TK_STRING)) {
+    printf("%s", ast->child[0]->lexeme);
+  } else if (ast->num_child >= 2 &&
+             is_CK_type(ast->child[0], CK_UNARY_OPERATOR)) {
+    unparse_AST(ast->child[0], depth);
+    check_CK_type(ast->child[1], CK_EXPRESSION);
+    unparse_AST(ast->child[0], depth);
+  } else if (ast->num_child >= 3 && is_CK_type(ast->child[0], CK_EXPRESSION)) {
+    unparse_AST(ast->child[0], depth);
+    if (is_CK_type(ast->child[1], CK_BINARY_OPERATOR)) {
+      unparse_AST(ast->child[1], depth);
+      check_CK_type(ast->child[2], CK_EXPRESSION);
+      unparse_AST(ast->child[2], depth);
+    } else {
+      check_TK_type(ast->child[1], '(');
+      printf("(");
+      int i = 2;
+      if (ast->num_child >= 4 &&
+          is_CK_type(ast->child[2], CK_ARGUMENT_EXPRESSION_LIST)) {
+        unparse_AST(ast->child[2], depth);
+        i++;
+      }
 
-  if (ast->num_child >= 3 && is_TK_type(ast->child[1], '(')) {
+      check_TK_type(ast->child[i], ')');
+      printf(")");
+    }
+  } else if (ast->num_child >= 3 && is_TK_type(ast->child[0], '(')) {
     printf("(");
+    check_CK_type(ast->child[1], CK_EXPRESSION);
+    unparse_AST(ast->child[1], depth);
     check_TK_type(ast->child[2], ')');
     printf(")");
+  } else {
+    unparse_error(ast);
   }
 }
 
-static void unparse_primary(struct AST *ast, int depth) {
-  if (is_TK_type(ast->child[0], TK_INT) || is_TK_type(ast->child[0], TK_CHAR) ||
-      is_TK_type(ast->child[0], TK_STRING) ||
-      is_TK_type(ast->child[0], TK_ID)) {
+static void unparse_unary_operator(struct AST *ast, int depth) {
+  if (is_TK_type(ast->child[0], '&') || is_TK_type(ast->child[0], '*') ||
+          is_TK_type(ast->child[0], '+') || is_TK_type(ast->child[0], '-'),
+      is_TK_type(ast->child[0], '!')) {
     printf("%s", ast->child[0]->lexeme);
-
-    if (is_TK_type(ast->child[0], '(')) {
-      printf("(");
-      check_CK_type(ast->child[1], CK_EXPRESSION);
-      unparse_AST(ast->child[1], depth);
-      check_TK_type(ast->child[2], ')');
-      printf(")");
-    }
-
     return;
   }
 
   unparse_error(ast);
 }
 
+static void unparse_binary_operator(struct AST *ast, int depth) {
+  if (is_TK_type(ast->child[0], '=') || is_TK_type(ast->child[0], TK_OP_OR) ||
+          is_TK_type(ast->child[0], TK_OP_AND) ||
+          is_TK_type(ast->child[0], TK_OP_EQ),
+      is_TK_type(ast->child[0], '<') || is_TK_type(ast->child[0], '+') ||
+          is_TK_type(ast->child[0], '=') || is_TK_type(ast->child[0], '*') ||
+          is_TK_type(ast->child[0], '/')) {
+    printf(" %s ", ast->child[0]->lexeme);
+    return;
+  }
+
+  unparse_error(ast);
+}
+
+static void unparse_argument_expression_list(struct AST *ast, int depth) {
+  check_CK_type(ast->child[0], CK_EXPRESSION);
+  unparse_AST(ast->child[0], depth);
+  int i = 1;
+  while (i < ast->num_child) {
+    if (!is_TK_type(ast->child[i], ',')) break;
+    check_CK_type(ast->child[i + 1], CK_EXPRESSION);
+    unparse_AST(ast->child[i + 1], depth);
+    i = i + 2;
+  }
+}
 static void unparse_condition_statement(struct AST *ast, int depth) {
   check_TK_type(ast->child[1], '(');
   printf("(");
@@ -973,9 +1222,13 @@ static void unparse_AST(struct AST *ast, int depth) {
   } else if (is_CK_type(ast, CK_COMPOUND_STATEMENT)) {
     unparse_compound_statement(ast, depth);
   } else if (is_CK_type(ast, CK_EXPRESSION)) {
-    unparse_exp(ast, depth);
-  } else if (is_CK_type(ast, CK_PRIMARY)) {
-    unparse_primary(ast, depth);
+    unparse_expression(ast, depth);
+  } else if (is_CK_type(ast, CK_UNARY_OPERATOR)) {
+    unparse_unary_operator(ast, depth);
+  } else if (is_CK_type(ast, CK_BINARY_OPERATOR)) {
+    unparse_binary_operator(ast, depth);
+  } else if (is_CK_type(ast, CK_ARGUMENT_EXPRESSION_LIST)) {
+    unparse_argument_expression_list(ast, depth);
   } else if (is_CK_type(ast, CK_STATEMENT)) {
     unparse_statement(ast, depth);
   } else {
@@ -996,10 +1249,10 @@ int main(int argc, char *argv[]) {
   ptr = map_file(argv[1]);
   create_tokens(ptr);
   reset_tokens();
-  dump_tokens();  // 提出時はコメントアウトしておくこと
+  // dump_tokens();  // 提出時はコメントアウトしておくこと
 
   ast = parse_translation_unit();
-  show_AST(ast, 0);  // 提出時はコメントアウトしておくこと
-  printf("\n");
+  // show_AST(ast, 0);  // 提出時はコメントアウトしておくこと
+  // printf("\n");
   unparse_AST(ast, 0);
 }
